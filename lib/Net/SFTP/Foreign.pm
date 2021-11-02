@@ -1585,7 +1585,9 @@ sub get {
     $local = _file_part($remote) unless defined $local;
     my $local_is_fh = (ref $local and $local->isa('GLOB'));
 
-    my $cb = delete $opts{callback};
+    my $start_cb = delete $opts{start_callback};
+    my $data_cb = delete $opts{data_callback};
+    my $stop_cb = delete $opts{stop_callback};
     my $umask = delete $opts{umask};
     my $perm = delete $opts{perm};
     my $copy_perm = delete $opts{exists $opts{copy_perm} ? 'copy_perm' : 'copy_perms'};
@@ -1595,6 +1597,7 @@ sub get {
     my $append = delete $opts{append};
     my $block_size = delete $opts{block_size} || $sftp->{_block_size};
     my $queue_size = delete $opts{queue_size} || $sftp->{_queue_size};
+
     my $dont_save = delete $opts{dont_save};
     my $conversion = delete $opts{conversion};
     my $numbered = delete $opts{numbered};
@@ -1803,6 +1806,9 @@ sub get {
         # Again, once this point is reached, all code paths should end
         # through the CLEANUP block.
 
+		if(defined $start_cb) {
+			$start_cb->($sftp, 'start', $remote, $size);
+		}
         while (1) {
             # request a new block if queue is not full
             while (!@msgid or ( ($size == -1 or $size + $block_size > $askoff)   and
@@ -1854,10 +1860,10 @@ sub get {
             my $adjustment_before = $adjustment;
             $adjustment += $converter->($data) if $converter;
 
-            if (length($data) and defined $cb) {
+            if (length($data) and defined $data_cb) {
                 # $size = $loff if ($loff > $size and $size != -1);
                 local $\;
-                $cb->($sftp, $data,
+                $data_cb->($sftp, $data,
                       $lstart + $roff + $adjustment_before,
                       $lstart + $size + $adjustment);
 
@@ -1872,6 +1878,9 @@ sub get {
                 }
             }
         }
+		if(defined $stop_cb) {
+			$stop_cb->($sftp, 'stop', $remote, $size);
+		}
 
         $sftp->_get_msg_by_id($_) for @msgid;
 
@@ -1884,10 +1893,10 @@ sub get {
             my $adjustment_before = $adjustment;
             $adjustment += $converter->($data);
 
-            if (length($data) and defined $cb) {
+            if (length($data) and defined $data_cb) {
                 # $size = $loff if ($loff > $size and $size != -1);
                 local $\;
-                $cb->($sftp, $data, $askoff + $adjustment_before, $size + $adjustment);
+                $data_cb->($sftp, $data, $askoff + $adjustment_before, $size + $adjustment);
                 goto CLEANUP if $sftp->{_error};
             }
 
@@ -1901,11 +1910,11 @@ sub get {
         }
 
         # we call the callback one last time with an empty string;
-        if (defined $cb) {
+        if (defined $data_cb) {
             my $data = '';
             do {
                 local $\;
-                $cb->($sftp, $data, $askoff + $adjustment, $size + $adjustment);
+                $data_cb->($sftp, $data, $askoff + $adjustment, $size + $adjustment);
             };
             return undef if $sftp->{_error};
             if (length($data) and !$dont_save) {
@@ -2758,7 +2767,6 @@ sub rget {
     defined $remote or croak "remote file path is undefined";
     $local = File::Spec->curdir unless defined $local;
 
-    # my $cb = delete $opts{callback};
     my $umask = delete $opts{umask};
     my $copy_perm = delete $opts{exists $opts{copy_perm} ? 'copy_perm' : 'copy_perms'};
     my $copy_time = delete $opts{copy_time};
@@ -2775,7 +2783,9 @@ sub rget {
 
     my %get_opts = (map { $_ => delete $opts{$_} }
                     qw(block_size queue_size overwrite conversion
-                       resume numbered atomic best_effort));
+                       resume numbered atomic best_effort
+                       start_callback data_callback stop_callback
+                       ));
 
     if ($get_opts{resume} and $get_opts{conversion}) {
         carp "resume option is useless when data conversion has also been requested";
