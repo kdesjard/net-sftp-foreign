@@ -1797,7 +1797,10 @@ sub get {
     my $slow_start = ($size == -1 ? $queue_size - 1 : 0);
 
     my $safe_block_size = $sftp->{_min_block_size} >= $block_size;
-
+	if(defined $start_cb) {
+		$start_cb->($sftp, 'start', $remote, 0);
+	}
+	my $bytes_read = 0;
     do {
         # Disable autodie here in order to do not leave unhandled
         # responses queued on the connection in case of failure.
@@ -1806,9 +1809,6 @@ sub get {
         # Again, once this point is reached, all code paths should end
         # through the CLEANUP block.
 
-		if(defined $start_cb) {
-			$start_cb->($sftp, 'start', $remote, $size);
-		}
         while (1) {
             # request a new block if queue is not full
             while (!@msgid or ( ($size == -1 or $size + $block_size > $askoff)   and
@@ -1837,6 +1837,7 @@ sub get {
 
             my $data = $msg->get_str;
             my $len = length $data;
+			$bytes_read += $len;
 
             if ($roff != $loff or !$len) {
                 $sftp->_set_error(SFTP_ERR_REMOTE_BLOCK_TOO_SMALL,
@@ -1878,9 +1879,6 @@ sub get {
                 }
             }
         }
-		if(defined $stop_cb) {
-			$stop_cb->($sftp, 'stop', $remote, $size);
-		}
 
         $sftp->_get_msg_by_id($_) for @msgid;
 
@@ -1990,6 +1988,9 @@ sub get {
                 $$atomic_numbered = $local if ref $atomic_numbered;
             }
         }
+		if(defined $stop_cb) {
+			$stop_cb->($sftp, 'stop', $remote, $bytes_read);
+		}
     CLEANUP:
         if ($cleanup and $sftp->{_error}) {
             unlink $local;
@@ -2031,7 +2032,9 @@ sub put {
     }
     # $remote = $sftp->_rel2abs($remote);
 
-    my $cb = delete $opts{callback};
+    my $start_cb = delete $opts{start_callback};
+    my $data_cb = delete $opts{data_callback};
+    my $stop_cb = delete $opts{stop_callback};
     my $umask = delete $opts{umask};
     my $perm = delete $opts{perm};
     my $copy_perm = delete $opts{copy_perm};
@@ -2308,6 +2311,10 @@ sub put {
 
     my $last_block_was_zeros;
 
+	if(defined $start_cb) {
+		$start_cb->($sftp, 'start', $local, 0);
+	}
+	my $bytes_written = 0;
     do {
         local $sftp->{autodie};
 
@@ -2383,9 +2390,9 @@ sub put {
 
                 my $nextoff = $writeoff + $len;
 
-                if (defined $cb) {
+                if (defined $data_cb) {
                     $lsize = $nextoff if $nextoff > $lsize;
-                    $cb->($sftp, $data, $writeoff, $lsize);
+                    $data_cb->($sftp, $data, $writeoff, $lsize);
 
                     last OK if $sftp->{_error};
 
@@ -2405,6 +2412,7 @@ sub put {
 
                         my $id = $sftp->_queue_new_msg(SSH2_FXP_WRITE, str => $rfid,
                                                        int64 => $writeoff, str => $data);
+						$bytes_written += length($data);
                         push @msgid, $id;
                         $last_block_was_zeros = 0;
                     }
@@ -2427,6 +2435,9 @@ sub put {
         }
 
         CORE::close $fh unless $local_is_fh;
+		if(defined $stop_cb) {
+			$stop_cb->($sftp, 'stop', $remote, $bytes_written);
+		}
 
         $sftp->_get_msg_by_id($_) for @msgid;
 
@@ -2904,7 +2915,6 @@ sub rput {
     defined $local or croak "local path is undefined";
     $remote = '.' unless defined $remote;
 
-    # my $cb = delete $opts{callback};
     my $umask = delete $opts{umask};
     my $perm = delete $opts{perm};
     my $copy_perm = delete $opts{exists $opts{copy_perm} ? 'copy_perm' : 'copy_perms'};
@@ -2923,6 +2933,7 @@ sub rput {
 		    qw(block_size queue_size overwrite
                        conversion resume numbered
                        late_set_perm atomic best_effort
+                       start_callback data_callback stop_callback
                        sparse));
 
     my %put_symlink_opts = (map { $_ => $put_opts{$_} }
